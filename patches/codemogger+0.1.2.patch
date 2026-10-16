@@ -1,0 +1,201 @@
+diff --git a/node_modules/codemogger/dist/chunk/languages.js b/node_modules/codemogger/dist/chunk/languages.js
+index 0cbd6ce..a383e77 100644
+--- a/node_modules/codemogger/dist/chunk/languages.js
++++ b/node_modules/codemogger/dist/chunk/languages.js
+@@ -29,6 +29,7 @@ const JAVASCRIPT = {
+         "variable_declaration",
+         "lexical_declaration",
+         "export_statement",
++        "expression_statement",
+     ],
+     splitNodes: ["class_declaration"],
+ };
+diff --git a/node_modules/codemogger/dist/chunk/treesitter.js b/node_modules/codemogger/dist/chunk/treesitter.js
+index bad560d..3403589 100644
+--- a/node_modules/codemogger/dist/chunk/treesitter.js
++++ b/node_modules/codemogger/dist/chunk/treesitter.js
+@@ -61,6 +61,16 @@ function extractName(node) {
+             return left.text;
+         return "";
+     }
++    // JS expression_statement: Namespace.Class = function(...) { ... }
++    if (node.type === "expression_statement") {
++        const expr = node.namedChildren[0];
++        if (expr?.type === "assignment_expression") {
++            const left = expr.childForFieldName("left");
++            if (left)
++                return left.text;
++        }
++        return "";
++    }
+     // C function_definition: name is nested inside declarator → function_declarator → declarator
+     if (node.type === "function_definition") {
+         const declarator = node.childForFieldName("declarator");
+@@ -230,6 +240,8 @@ export async function chunkFile(filePath, content, fileHash, config) {
+             return "method";
+         if (type.includes("interface"))
+             return "interface";
++        if (type === "expression_statement")
++            return "function";
+         if (type === "variable_declaration" || type === "lexical_declaration" || type === "var_declaration" || type === "val_definition" || type === "assignment")
+             return "variable";
+         if (type === "declaration")
+@@ -299,6 +311,33 @@ export async function chunkFile(filePath, content, fileHash, config) {
+                 return;
+             }
+         }
++        // JS namespace-assignment patterns (pre-ES6 style):
++        //   Namespace.Class = function(...) { this.m = function(){}; var p = function(){}; }
++        //   Namespace.utils = { m: function(){}, ... }
++        // Each member becomes its own chunk (so keyword search on method names
++        // works and snippets stay small); the class/object gets a slim header chunk.
++        if (node.type === "expression_statement") {
++            const expr = node.namedChildren[0];
++            if (expr?.type !== "assignment_expression")
++                return;
++            const left = expr.childForFieldName("left");
++            const right = expr.childForFieldName("right");
++            if (!left || !right)
++                return;
++            if (right.type === "function_expression" || right.type === "arrow_function") {
++                emitNamespaceClass(node, left.text, right);
++                return;
++            }
++            if (right.type === "class") {
++                chunks.push(makeChunk(node, "class"));
++                return;
++            }
++            if (right.type === "object") {
++                emitNamespaceObject(node, left.text, right);
++                return;
++            }
++            return; // skip other assignments
++        }
+         if (!topLevelSet.has(node.type))
+             return;
+         const lineCount = node.endPosition.row - node.startPosition.row + 1;
+@@ -309,6 +348,124 @@ export async function chunkFile(filePath, content, fileHash, config) {
+         }
+         splitLargeNode(node, node);
+     }
++    // ── JS namespace-pattern helpers ────────────────────────────────────────
++    function isFn(n) {
++        return !!n && (n.type === "function_expression" || n.type === "arrow_function" || n.type === "function");
++    }
++    /** Start row of a `/** *\/` doc comment above `node` (only blank lines between), else node's own row. */
++    function docStartRow(node) {
++        const row = node.startPosition.row;
++        let prev = node.previousSibling;
++        while (prev && prev.type === ",")
++            prev = prev.previousSibling;
++        if (!prev || prev.type !== "comment" || !prev.text.startsWith("/**"))
++            return row;
++        for (let r = prev.endPosition.row + 1; r < row; r++) {
++            if ((sourceLines[r] ?? "").trim() !== "")
++                return row;
++        }
++        return prev.startPosition.row;
++    }
++    /** Banner lines like `//*****` and `//** name`, or blank lines. */
++    function isFiller(line) {
++        const t = (line ?? "").trim();
++        return t === "" || t.startsWith("//**");
++    }
++    function rangeChunk(startRow, endRow, kind, name, sigRow) {
++        const startLine = startRow + 1;
++        const endLine = endRow + 1;
++        return {
++            chunkKey: `${filePath}:${startLine}:${endLine}`,
++            filePath,
++            language: config.name,
++            kind,
++            name,
++            signature: sourceLines[sigRow]?.trim() ?? "",
++            snippet: sourceLines.slice(startRow, endRow + 1).join("\n"),
++            startLine,
++            endLine,
++            fileHash,
++        };
++    }
++    /** Emit a header chunk from startRow up to (not incl.) firstMemberRow, trimming trailing filler. */
++    function emitHeader(startRow, firstMemberRow, kind, name, sigRow) {
++        let end = firstMemberRow - 1;
++        while (end > sigRow && isFiller(sourceLines[end]))
++            end--;
++        if (end >= startRow)
++            chunks.push(rangeChunk(startRow, end, kind, name, sigRow));
++    }
++    /** Member defined directly in a constructor body, or null. */
++    function constructorMember(stmt) {
++        if (stmt.type === "expression_statement") {
++            const e = stmt.namedChildren[0];
++            if (e?.type === "assignment_expression") {
++                const l = e.childForFieldName("left");
++                const r = e.childForFieldName("right");
++                if (l?.type === "member_expression" && isFn(r)) {
++                    const obj = l.childForFieldName("object");
++                    const prop = l.childForFieldName("property");
++                    if (obj?.type === "this" && prop)
++                        return { name: prop.text, kind: "method" };
++                }
++            }
++        }
++        else if (stmt.type === "variable_declaration" || stmt.type === "lexical_declaration") {
++            const d = stmt.namedChildren.find(c => c.type === "variable_declarator");
++            const n = d?.childForFieldName("name");
++            if (n && isFn(d.childForFieldName("value")))
++                return { name: n.text, kind: "function" };
++        }
++        else if (stmt.type === "function_declaration") {
++            const n = stmt.childForFieldName("name");
++            if (n)
++                return { name: n.text, kind: "function" };
++        }
++        return null;
++    }
++    function emitNamespaceClass(stmt, owner, fn) {
++        const headStart = docStartRow(stmt);
++        const sigRow = stmt.startPosition.row;
++        const body = fn.childForFieldName("body");
++        const members = [];
++        if (body?.type === "statement_block") {
++            for (const s of body.namedChildren) {
++                const m = constructorMember(s);
++                if (m)
++                    members.push({ ...m, node: s });
++            }
++        }
++        if (!members.length) {
++            chunks.push(rangeChunk(headStart, stmt.endPosition.row, "function", owner, sigRow));
++            return;
++        }
++        emitHeader(headStart, docStartRow(members[0].node), "class", owner, sigRow);
++        for (const m of members) {
++            chunks.push(rangeChunk(docStartRow(m.node), m.node.endPosition.row, m.kind, `${owner}.${m.name}`, m.node.startPosition.row));
++        }
++    }
++    function emitNamespaceObject(stmt, owner, obj) {
++        const members = [];
++        for (const p of obj.namedChildren) {
++            if (p.type === "pair" && isFn(p.childForFieldName("value"))) {
++                const k = p.childForFieldName("key");
++                if (k)
++                    members.push({ name: k.text.replace(/^["']|["']$/g, ""), node: p });
++            }
++            else if (p.type === "method_definition") {
++                const k = p.childForFieldName("name");
++                if (k)
++                    members.push({ name: k.text, node: p });
++            }
++        }
++        if (!members.length)
++            return; // plain data object — not worth a chunk
++        const sigRow = stmt.startPosition.row;
++        emitHeader(docStartRow(stmt), docStartRow(members[0].node), "namespace", owner, sigRow);
++        for (const m of members) {
++            chunks.push(rangeChunk(docStartRow(m.node), m.node.endPosition.row, "function", `${owner}.${m.name}`, m.node.startPosition.row));
++        }
++    }
+     // Body wrapper node types that contain the actual sub-items of a class/module/namespace
+     const bodyWrappers = new Set([
+         "class_body", // TS/JS/Java

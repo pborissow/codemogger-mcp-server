@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Generated indexes and runtime data
+.codemogger/
+
+# Diagnostics dumped by --heapsnapshot-near-heap-limit / manual profiles
+*.heapsnapshot
+*.cpuprofile
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Smoke-test artifacts (produced by ad-hoc test scripts)
+smoke.log
+smoke.err
+
+# Local config — machine-specific project paths, never committed. This includes
+# config.json itself and any variation ("config - Copy.json", "config.local.json").
+# Copy config.example.json to config.json to get started.
+config*.json
+!config.example.json
+
+# Backups
+*.bak
+*.old
+*.orig
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini

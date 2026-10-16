@@ -1,0 +1,23 @@
+{
+  "examples": {
+    "keyword": ["handleRequest", "UserService"],
+    "semantic": ["how does authentication work?", "error handling flow"]
+  },
+  "projects": [
+    {
+      "project": "my-app",
+      "label": "My App - Web application backend and frontend",
+      "paths": [
+        "/path/to/my-app/src",
+        "/path/to/my-app/lib"
+      ]
+    },
+    {
+      "project": "my-lib",
+      "label": "My Lib - Shared utility library",
+      "paths": [
+        "/path/to/my-lib/src"
+      ]
+    }
+  ]
+}
