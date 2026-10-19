@@ -1,5 +1,5 @@
 {
-  "name": "yc-codemogger-mcp",
+  "name": "codemogger-mcp-server",
   "version": "1.0.0",
   "private": true,
   "type": "module",
